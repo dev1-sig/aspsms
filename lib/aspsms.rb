@@ -28,7 +28,8 @@
 require 'rexml/document'
 require 'net/http'
 require 'uri'
-require 'iconv'
+#require 'iconv' 
+require 'logger'  
 
 module ASPSMS
   FILES = [ "#{ENV['HOME']}/.aspsms", '/etc/aspsms', '/usr/local/etc/aspsms' ]
@@ -141,12 +142,16 @@ module ASPSMS
     end
 
     def utf8(str)
-      unless @charset.match(/utf-?8/i)
-        return Iconv::iconv('utf-8', @charset, str)[0]
+      unless @charset.match(/utf-?8/i) 
+        #return Iconv::iconv('utf-8', @charset, str)[0]
+        return str.encode("UTF-8", :invalid => :replace, :undef => :replace, :replace => "?")
       else
         return str
       end
     end
+    def ucs2(str)
+      return str.unpack('U'*str.length).collect {|x| sprintf("%04X", x)}.join
+    end    
   end
 
   # Represents a request of specific types.
@@ -220,6 +225,47 @@ module ASPSMS
             add_text(@cfg.utf8(url_nondelivery)) unless url_nondelivery.empty?
       end
     end
+
+    class SendBinaryData < SendTextSMS
+      attr_accessor :originator, :recipients, :text, :flashing, :blinking,
+                    :tx_refs, :url_buffered, :url_nondelivery, :url_delivery
+   def initialize(cfg)
+        super(cfg)
+        @originator = @cfg.originator
+        @recipients = []
+        @text = ''
+        @flashing = false
+        @blinking = false
+        @tx_refs = []
+        @url_buffered = ''
+        @url_delivery = ''
+        @url_nondelivery = ''
+      end
+      def each_element
+        yield REXML::Element.new('Originator').add_text(@cfg.utf8(originator))
+        @recipients = [ @recipients ] unless @recipients.kind_of?(Array)
+        txr = @tx_refs.dup
+        recipients.each do |recipient|
+          rcpt = REXML::Element.new('Recipient')
+          rcpt.elements.add(Element.new('PhoneNumber').
+                            add_text(@cfg.utf8(recipient)))
+          rcpt.elements.add(Element.new('TransRefNumber').
+                            add_text(txr.shift)) unless txr.empty?
+          yield rcpt
+        end
+        yield REXML::Element.new('MessageData').add_text(@cfg.ucs2(text))
+        yield REXML::Element.new('XSer').add_text("020108")
+        yield REXML::Element.new('UsedCredits').add_text('1')
+        yield REXML::Element.new('FlashingSMS').add_text('1') if flashing
+        yield REXML::Element.new('BlinkingSMS').add_text('1') if blinking
+        yield REXML::Element.new('URLBufferedMessageNotification').
+            add_text(@cfg.utf8(url_buffered)) unless url_buffered.empty?
+        yield REXML::Element.new('URLDeliveryNotification').
+            add_text(@cfg.utf8(url_delivery)) unless url_delivery.empty?
+        yield REXML::Element.new('URLNonDeliveryNotification').
+            add_text(@cfg.utf8(url_nondelivery)) unless url_nondelivery.empty?
+      end      
+    end    
 
     class SendOriginatorUnlockCode < Abstract
       attr_accessor :originator
@@ -350,7 +396,12 @@ module ASPSMS
     def send(req)
       headers = { 'User-Agent' => @cfg.useragent,
                   'Content-Type' => 'text/xml' }
+      #myLogger = Logger.new('aspsms.log')      
+      #myLogger.debug(headers)                  
+      #myLogger.debug(req.inspect)             
+      #myLogger.debug(req.to_s)             
       resp = @http.post('/xmlsvr.asp', req.to_s, headers)
+      #myLogger.debug(resp.inspect)                  
       ASPSMS::Response.parse(@cfg, resp.body)
     end
   end
